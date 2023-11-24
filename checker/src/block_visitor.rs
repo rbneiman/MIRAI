@@ -40,6 +40,7 @@ use crate::summaries::Precondition;
 use crate::tag_domain::Tag;
 use crate::type_visitor::TypeVisitor;
 use crate::utils;
+use crate::z3_solver::Z3Solver;
 
 /// Holds the state for the basic block visitor
 pub struct BlockVisitor<'block, 'analysis, 'compilation, 'tcx> {
@@ -284,6 +285,14 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
         debug!("env {:?}", self.bv.current_environment);
         self.bv.current_location = location;
         self.bv.current_span = source_info.span;
+        let solver = Z3Solver::new();
+        let ec = solver.get_as_smt_predicate(&self.bv.current_environment.entry_condition.expression);
+        solver.assert(&ec);
+        if solver.solve() == SmtResult::Satisfiable {
+            println!("function name: {:?}, kind: {:?}, loc: {:?}, span: {:?}", self.bv.function_name, kind, location, self.bv.current_span);
+            println!("cond: {:?}", self.bv.current_environment.entry_condition);
+            println!("model: {}", solver.get_model_as_string());
+        }
         match kind {
             mir::TerminatorKind::Goto { target } => self.visit_goto(*target),
             mir::TerminatorKind::SwitchInt { discr, targets } => {
