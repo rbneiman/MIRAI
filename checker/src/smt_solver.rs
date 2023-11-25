@@ -27,6 +27,8 @@ pub trait SmtSolver<SmtExpressionType> {
     /// Adds the given expression to the current context.
     fn assert(&self, expression: &SmtExpressionType);
 
+    fn reset(&self);
+
     /// Destroy the current context and restore the containing context as current.
     fn backtrack(&self) {
         precondition!(get_model_field!(&self, number_of_backtracks, 0) > 0);
@@ -81,6 +83,8 @@ impl SmtSolver<usize> for SolverStub {
     }
 
     fn assert(&self, _: &usize) {}
+
+    fn reset(&self) {}
 
     fn backtrack(&self) {}
 

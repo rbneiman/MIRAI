@@ -130,6 +130,14 @@ impl SmtSolver<Z3ExpressionType> for Z3Solver {
     }
 
     #[logfn_inputs(TRACE)]
+    fn reset(&self) {
+        let _guard = Z3_MUTEX.lock().unwrap();
+        unsafe {
+            z3_sys::Z3_solver_reset(self.z3_context, self.z3_solver);
+        }
+    }
+
+    #[logfn_inputs(TRACE)]
     fn backtrack(&self) {
         let _guard = Z3_MUTEX.lock().unwrap();
         unsafe {

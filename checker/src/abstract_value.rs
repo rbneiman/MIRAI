@@ -160,6 +160,19 @@ impl From<u128> for AbstractValue {
 }
 
 impl AbstractValue {
+    #[logfn_inputs(TRACE)]
+    pub fn collect_disjuncts(&self, disjuncts: &mut HashSet<Rc<AbstractValue>>) {
+        match &self.expression {
+            Expression::Or { left, right } => {
+                left.collect_disjuncts(disjuncts);
+                right.collect_disjuncts(disjuncts);
+            }
+            _ => {
+                disjuncts.insert(self.clone().into());
+            }
+        }
+    }
+
     /// Creates an abstract value from a binary expression and keeps track of the size.
     #[logfn_inputs(TRACE)]
     fn make_binary(

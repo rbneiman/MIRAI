@@ -78,6 +78,8 @@ pub struct BodyVisitor<'analysis, 'compilation, 'tcx> {
     pub block_to_call: HashMap<mir::Location, DefId>,
     pub treat_as_foreign: bool,
     type_visitor: TypeVisitor<'tcx>,
+
+    pub disjuncts: HashSet<Rc<AbstractValue>>,
 }
 
 impl<'analysis, 'compilation, 'tcx> Debug for BodyVisitor<'analysis, 'compilation, 'tcx> {
@@ -147,6 +149,7 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
             block_to_call: HashMap::default(),
             treat_as_foreign: false,
             type_visitor: TypeVisitor::new(def_id, mir, tcx, type_cache),
+            disjuncts: HashSet::new(),
         }
     }
 
@@ -227,6 +230,30 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
             is_incomplete: true,
             ..Summary::default()
         };
+
+        println!("function name: {:?}", fixed_point_visitor.bv.function_name);
+        for condition in &fixed_point_visitor.bv.disjuncts {
+            let mut found_subset = false;
+            for condition_check in &fixed_point_visitor.bv.disjuncts {
+                if condition != condition_check && condition_check.subset(&condition) {
+                    found_subset = true;
+                    // I don't think this works for conditions with abstract values.
+                    // We may need to handle subset conditions another way,
+                    // or we could just check if our test cases have the same values
+                }
+            }
+            if found_subset {
+                continue;
+            }
+            let solver = Z3Solver::new();
+            let expression = solver.get_as_smt_predicate(&condition.expression);
+            solver.assert(&expression);
+            if solver.solve() == SmtResult::Satisfiable {
+                println!("cond: {:?}", condition);
+                println!("model:\n{}", solver.get_model_as_string());
+            }
+        }
+
         if !fixed_point_visitor.bv.analysis_is_incomplete
             || (elapsed_time_in_seconds < max_analysis_time_for_body
                 && diag_level == DiagLevel::Paranoid)
