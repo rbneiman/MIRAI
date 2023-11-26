@@ -233,16 +233,13 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
 
         println!("function name: {:?}", fixed_point_visitor.bv.function_name);
         for condition in &fixed_point_visitor.bv.disjuncts {
-            let mut found_subset = false;
+            let mut found_subexpression = false;
             for condition_check in &fixed_point_visitor.bv.disjuncts {
-                if condition != condition_check && condition_check.subset(&condition) {
-                    found_subset = true;
-                    // I don't think this works for conditions with abstract values.
-                    // We may need to handle subset conditions another way,
-                    // or we could just check if our test cases have the same values
+                if condition != condition_check && condition_check.subexpression(&condition) {
+                    found_subexpression = true;
                 }
             }
-            if found_subset {
+            if found_subexpression {
                 continue;
             }
             let solver = Z3Solver::new();

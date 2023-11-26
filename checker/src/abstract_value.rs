@@ -847,6 +847,7 @@ pub trait AbstractValueTrait: Sized {
     fn subtract(&self, other: Self) -> Self;
     #[must_use]
     fn sub_overflows(&self, other: Self, target_type: ExpressionType) -> Self;
+    fn subexpression(&self, other: &Rc<AbstractValue>) -> bool;
     fn subset(&self, other: &Self) -> bool;
     fn switch(
         &self,
@@ -5094,6 +5095,42 @@ impl AbstractValueTrait for Rc<AbstractValue> {
                 })
             },
         )
+    }
+
+    #[logfn_inputs(TRACE)] // 1 && 2 && 3 && 4, 1 && 2
+    fn subexpression(&self, other: &Rc<AbstractValue>) -> bool {
+        if self.expression.eq(&other.expression) {
+            return true;
+        }
+        match (&self.expression, &other.expression) {
+            (_, Expression::And {
+                left,
+                right
+            }) => {
+                self.subexpression(left) && self.subexpression(right)
+            }
+            (_, Expression::Or {
+                left,
+                right
+            }) => {
+                self.subexpression(left) || self.subexpression(right)
+            }
+            (Expression::And {
+                left,
+                right
+            }, _) => {
+                left.subexpression(other) || right.subexpression(other)
+            }
+            (Expression::Or {
+                left,
+                right
+            }, _) => {
+                left.subexpression(other) && right.subexpression(other)
+            }
+            _ => {
+                return self.subset(other);
+            }
+        }
     }
 
     /// True if all of the concrete values that correspond to self also correspond to other.
