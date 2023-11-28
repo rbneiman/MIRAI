@@ -19,8 +19,21 @@ pub enum SmtResult {
     Undefined,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum SmtParamValue{
+    Bool{val: bool},
+    Numeral{val: i128},
+    Unknown
+}
+
+// #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Hash)]
+pub trait SmtParam{
+
+    fn get_val(&self) -> SmtParamValue;
+}
+
 /// The functionality that a solver must expose in order for MIRAI to use it.
-pub trait SmtSolver<SmtExpressionType> {
+pub trait SmtSolver<SmtExpressionType, SmtParam> {
     /// Returns a string representation of the given expression for use in debugging.
     fn as_debug_string(&self, expression: &SmtExpressionType) -> String;
 
@@ -41,7 +54,7 @@ pub trait SmtSolver<SmtExpressionType> {
     /// assertions in the solver. Can only be called after self.solve return SmtResult::Satisfiable.
     fn get_model_as_string(&self) -> String;
 
-    fn get_model_params(&self, mirai_expr: &Expression) -> String;
+    fn get_model_params(&self, mirai_expr: &Expression) -> Vec<SmtParam>;
 
     /// Provides a string that contains a listing of all of the definitions and assertions that
     /// have been added to the solver.
@@ -79,7 +92,7 @@ pub trait SmtSolver<SmtExpressionType> {
 #[derive(Default)]
 pub struct SolverStub {}
 
-impl SmtSolver<usize> for SolverStub {
+impl SmtSolver<usize, usize> for SolverStub {
     fn as_debug_string(&self, _: &usize) -> String {
         String::from("not implemented")
     }
@@ -98,8 +111,8 @@ impl SmtSolver<usize> for SolverStub {
         String::from("not implemented")
     }
 
-    fn get_model_params(&self, mirai_expr: &Expression) -> String{
-        String::from("not implemented")
+    fn get_model_params(&self, mirai_expr: &Expression) -> Vec<usize>{
+        vec![]
     }
 
     fn get_solver_state_as_string(&self) -> String {

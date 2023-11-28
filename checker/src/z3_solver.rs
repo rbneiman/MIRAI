@@ -9,6 +9,8 @@ use crate::abstract_value::AbstractValueTrait;
 use crate::constant_domain::ConstantDomain;
 use crate::expression::{Expression, ExpressionType};
 use crate::path::Path;
+use crate::smt_solver::SmtParam;
+use crate::smt_solver::SmtParamValue;
 use crate::smt_solver::SmtResult;
 use crate::smt_solver::SmtSolver;
 use crate::tag_domain::Tag;
@@ -46,9 +48,72 @@ pub struct Z3Solver {
     has_tag_func: z3_sys::Z3_func_decl,
 }
 
+pub struct Z3Param {
+    val: SmtParamValue,
+    decl_name: String,
+    mirai_expr: Expression,
+    debug_str: String,
+}
+
 impl Debug for Z3Solver {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         "Z3Solver".fmt(f)
+    }
+}
+
+impl Z3Param{
+    unsafe fn new(context: z3_sys::Z3_context, model: z3_sys::Z3_model, decl: z3_sys::Z3_func_decl, mirai_expr: Expression) -> Self{
+        let assignment = z3_sys::Z3_model_get_const_interp(context, model, decl);
+        let decl_kind = z3_sys::Z3_get_ast_kind(context, assignment);
+
+        let val: SmtParamValue = match decl_kind{
+            z3_sys::AstKind::Numeral => {
+                let mut t_val: i32 = 0;
+                z3_sys::Z3_get_numeral_int(context, assignment, &mut t_val);
+                SmtParamValue::Numeral { val: t_val as i128 }
+            },
+            z3_sys::AstKind::App => {
+                match z3_sys::Z3_get_bool_value(context, assignment){
+                    z3_sys::Z3_L_TRUE => SmtParamValue::Bool { val: true },
+                    z3_sys::Z3_L_FALSE => SmtParamValue::Bool { val: false },
+                    _ => SmtParamValue::Unknown
+                }
+            },
+            _ => {SmtParamValue::Unknown}
+        };
+
+        let decl_name_symbol = z3_sys::Z3_get_decl_name(context, decl);
+        let decl_name_bytes = z3_sys::Z3_get_symbol_string(context, decl_name_symbol);
+        let decl_name = CStr::from_ptr(decl_name_bytes).to_str().unwrap().to_string();
+
+        let decl_bytes = z3_sys::Z3_func_decl_to_string(context, decl);
+        let decl_str = CStr::from_ptr(decl_bytes).to_str().unwrap().to_string();
+
+        let assign_bytes = z3_sys::Z3_ast_to_string(context, assignment.clone());
+        let assign_str = CStr::from_ptr(assign_bytes).to_str().unwrap().to_string();
+
+        let debug_str = format!("decl (kind: {:?}, name: {:?}, val: {:?}): {} -> {}", decl_kind, decl_name, val, decl_str, assign_str);
+
+        Z3Param { val, decl_name, mirai_expr, debug_str }
+    }
+
+    
+    fn get_name(&self) -> &String {
+        &self.decl_name
+    }
+}
+
+impl SmtParam for Z3Param{
+
+
+    fn get_val(&self) -> SmtParamValue {
+        self.val.clone()
+    }
+}
+
+impl Debug for Z3Param{
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        self.debug_str.fmt(f)
     }
 }
 
@@ -114,7 +179,7 @@ impl Default for Z3Solver {
     }
 }
 
-impl SmtSolver<Z3ExpressionType> for Z3Solver {
+impl SmtSolver<Z3ExpressionType, Z3Param> for Z3Solver {
     #[logfn_inputs(TRACE)]
     fn as_debug_string(&self, expression: &Z3ExpressionType) -> String {
         let _guard = Z3_MUTEX.lock().unwrap();
@@ -163,31 +228,20 @@ impl SmtSolver<Z3ExpressionType> for Z3Solver {
     }
 
     #[logfn_inputs(TRACE)]
-    fn get_model_params(&self, mirai_expr: &Expression) -> String{
+    fn get_model_params(&self, mirai_expr: &Expression) -> Vec<Z3Param>{
+        let mut param_vals : Vec<Z3Param> = Vec::new();
         unsafe{
             let model = z3_sys::Z3_solver_get_model(self.z3_context, self.z3_solver);
             let num_consts = z3_sys::Z3_model_get_num_consts(self.z3_context, model);
             
-            let mut const_decls: Vec<z3_sys::Z3_func_decl> = Vec::new();
             for i in 0..num_consts{
-                let const_decl = z3_sys::Z3_model_get_const_decl(self.z3_context, model, i);
-                let const_assignment = z3_sys::Z3_model_get_const_interp(self.z3_context, model, const_decl);
-                let decl_kind = z3_sys::Z3_get_ast_kind(self.z3_context, const_assignment);
-
-                let decl_bytes = z3_sys::Z3_func_decl_to_string(self.z3_context, const_decl.clone());
-                let decl_str = CStr::from_ptr(decl_bytes).to_str().unwrap().to_string();
-
-                let assign_bytes = z3_sys::Z3_ast_to_string(self.z3_context, const_assignment.clone());
-                let assign_str = CStr::from_ptr(assign_bytes).to_str().unwrap().to_string();
-                
-
-                println!("decl (kind: {:?}): {} -> {}", decl_kind, decl_str, assign_str);
-                const_decls.push(const_decl);
+                let const_decl = z3_sys::Z3_model_get_const_decl(self.z3_context, model, i);   
+                let val = Z3Param::new(self.z3_context, model, const_decl, mirai_expr.clone());
+                param_vals.push(val);
             }
             
-            println!("kind: {:?}", "test");
         }
-        "test".to_string()
+        param_vals
     }
 
     #[logfn_inputs(TRACE)]
