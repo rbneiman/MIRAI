@@ -41,6 +41,8 @@ pub trait SmtSolver<SmtExpressionType> {
     /// assertions in the solver. Can only be called after self.solve return SmtResult::Satisfiable.
     fn get_model_as_string(&self) -> String;
 
+    fn get_model_params(&self, mirai_expr: &Expression) -> String;
+
     /// Provides a string that contains a listing of all of the definitions and assertions that
     /// have been added to the solver.
     fn get_solver_state_as_string(&self) -> String;
@@ -93,6 +95,10 @@ impl SmtSolver<usize> for SolverStub {
     }
 
     fn get_model_as_string(&self) -> String {
+        String::from("not implemented")
+    }
+
+    fn get_model_params(&self, mirai_expr: &Expression) -> String{
         String::from("not implemented")
     }
 

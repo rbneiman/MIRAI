@@ -247,7 +247,8 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
             solver.assert(&expression);
             if solver.solve() == SmtResult::Satisfiable {
                 println!("cond: {:?}", condition);
-                println!("model:\n{}", solver.get_model_as_string());
+                // println!("model:\n{}", solver.get_model_as_string());
+                println!("params: {:?}", solver.get_model_params(&condition.expression));
             }
         }
 

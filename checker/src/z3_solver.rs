@@ -163,6 +163,34 @@ impl SmtSolver<Z3ExpressionType> for Z3Solver {
     }
 
     #[logfn_inputs(TRACE)]
+    fn get_model_params(&self, mirai_expr: &Expression) -> String{
+        unsafe{
+            let model = z3_sys::Z3_solver_get_model(self.z3_context, self.z3_solver);
+            let num_consts = z3_sys::Z3_model_get_num_consts(self.z3_context, model);
+            
+            let mut const_decls: Vec<z3_sys::Z3_func_decl> = Vec::new();
+            for i in 0..num_consts{
+                let const_decl = z3_sys::Z3_model_get_const_decl(self.z3_context, model, i);
+                let const_assignment = z3_sys::Z3_model_get_const_interp(self.z3_context, model, const_decl);
+                let decl_kind = z3_sys::Z3_get_ast_kind(self.z3_context, const_assignment);
+
+                let decl_bytes = z3_sys::Z3_func_decl_to_string(self.z3_context, const_decl.clone());
+                let decl_str = CStr::from_ptr(decl_bytes).to_str().unwrap().to_string();
+
+                let assign_bytes = z3_sys::Z3_ast_to_string(self.z3_context, const_assignment.clone());
+                let assign_str = CStr::from_ptr(assign_bytes).to_str().unwrap().to_string();
+                
+
+                println!("decl (kind: {:?}): {} -> {}", decl_kind, decl_str, assign_str);
+                const_decls.push(const_decl);
+            }
+            
+            println!("kind: {:?}", "test");
+        }
+        "test".to_string()
+    }
+
+    #[logfn_inputs(TRACE)]
     fn get_solver_state_as_string(&self) -> String {
         let _guard = Z3_MUTEX.lock().unwrap();
         unsafe {
