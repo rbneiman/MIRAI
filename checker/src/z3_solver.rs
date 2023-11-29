@@ -7,6 +7,7 @@
 use crate::abstract_value::AbstractValue;
 use crate::abstract_value::AbstractValueTrait;
 use crate::constant_domain::ConstantDomain;
+use crate::expression;
 use crate::expression::{Expression, ExpressionType};
 use crate::path::Path;
 use crate::smt_solver::SmtParam;
@@ -19,13 +20,15 @@ use lazy_static::lazy_static;
 use log::debug;
 use log_derive::*;
 use mirai_annotations::*;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::ffi::{CStr, CString};
 use std::fmt::{Debug, Formatter, Result};
 use std::rc::Rc;
 use std::sync::Mutex;
 
-pub type Z3ExpressionType = z3_sys::Z3_ast;
+pub type Z3ExpressionType = (z3_sys::Z3_ast, Rc<RefCell<HashMap<String, Combined>>>);
 
 lazy_static! {
     static ref Z3_MUTEX: Mutex<()> = Mutex::new(());
@@ -46,12 +49,66 @@ pub struct Z3Solver {
     empty_str: z3_sys::Z3_string,
     /// A logical predicate has_tag(path, tag) that indicates path is attached with tag.
     has_tag_func: z3_sys::Z3_func_decl,
+
+    latest_param_map: Rc<RefCell<HashMap<String, Combined>>>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Combined{
+    Path{val: Rc<Path>},
+    AbstractValue{val: Rc<AbstractValue>},
+    Expression{val: Expression},
+    Tag{val: Tag},
+    ConstantDomain{val: ConstantDomain},
+    Solver{}
+}
+
+impl From<&Rc<Path>> for Combined{
+    fn from(val: &Rc<Path>) -> Self {
+        Combined::Path{val: val.clone()}
+    }
+}
+
+impl From<Rc<Path>> for Combined{
+    fn from(val: Rc<Path>) -> Self {
+        Combined::Path{val}
+    }
+}
+
+impl From<Rc<AbstractValue>> for Combined{
+    fn from(val: Rc<AbstractValue>) -> Self {
+        Combined::AbstractValue{val}
+    }
+}
+
+impl From<&Expression> for Combined{
+    fn from(val: &Expression) -> Self {
+        Combined::Expression{val: val.clone()}
+    }
+}
+
+impl From<&ConstantDomain> for Combined{
+    fn from(val: &ConstantDomain) -> Self {
+        Combined::ConstantDomain { val: val.clone()}
+    }
+}
+
+impl From<&Tag> for Combined{
+    fn from(val: &Tag) -> Self {
+        Combined::Tag { val: val.clone()}
+    }
+}
+
+impl From<&Z3Solver> for Combined{
+    fn from(val: &Z3Solver) -> Self {
+        Combined::Solver {  }
+    }
 }
 
 pub struct Z3Param {
     val: SmtParamValue,
     decl_name: String,
-    mirai_expr: Expression,
+    mirai_expr: Option<Combined>,
     debug_str: String,
 }
 
@@ -62,7 +119,8 @@ impl Debug for Z3Solver {
 }
 
 impl Z3Param{
-    unsafe fn new(context: z3_sys::Z3_context, model: z3_sys::Z3_model, decl: z3_sys::Z3_func_decl, mirai_expr: Expression) -> Self{
+    #[logfn_inputs(TRACE)]
+    unsafe fn new(context: z3_sys::Z3_context, model: z3_sys::Z3_model, decl: z3_sys::Z3_func_decl, param_map: &HashMap<String, Combined>) -> Self{
         let assignment = z3_sys::Z3_model_get_const_interp(context, model, decl);
         let decl_kind = z3_sys::Z3_get_ast_kind(context, assignment);
 
@@ -92,8 +150,11 @@ impl Z3Param{
         let assign_bytes = z3_sys::Z3_ast_to_string(context, assignment.clone());
         let assign_str = CStr::from_ptr(assign_bytes).to_str().unwrap().to_string();
 
-        let debug_str = format!("decl (kind: {:?}, name: {:?}, val: {:?}): {} -> {}", decl_kind, decl_name, val, decl_str, assign_str);
+        
 
+        let mirai_expr = param_map.get(&decl_name).and_then(|v| Some(v.clone()));
+
+        let debug_str = format!("decl (kind: {:?}, name: {:?}, val: {:?}, expr: {:?}): {} -> {}", decl_kind, decl_name, val, mirai_expr, decl_str, assign_str);
         Z3Param { val, decl_name, mirai_expr, debug_str }
     }
 
@@ -153,6 +214,8 @@ impl Z3Solver {
                 bool_sort,
             );
 
+            let latest_param_map: Rc<RefCell<HashMap<String, Combined>>> = Rc::new(RefCell::new(HashMap::new()));
+
             Z3Solver {
                 z3_context,
                 z3_solver,
@@ -167,6 +230,7 @@ impl Z3Solver {
                 two,
                 empty_str,
                 has_tag_func,
+                latest_param_map,
             }
         }
     }
@@ -183,14 +247,14 @@ impl SmtSolver<Z3ExpressionType, Z3Param> for Z3Solver {
     #[logfn_inputs(TRACE)]
     fn as_debug_string(&self, expression: &Z3ExpressionType) -> String {
         let _guard = Z3_MUTEX.lock().unwrap();
-        self.as_debug_string_helper(*expression)
+        self.as_debug_string_helper(expression.0)
     }
 
     #[logfn_inputs(TRACE)]
     fn assert(&self, expression: &Z3ExpressionType) {
         let _guard = Z3_MUTEX.lock().unwrap();
         unsafe {
-            z3_sys::Z3_solver_assert(self.z3_context, self.z3_solver, *expression);
+            z3_sys::Z3_solver_assert(self.z3_context, self.z3_solver, expression.0);
         }
     }
 
@@ -213,7 +277,8 @@ impl SmtSolver<Z3ExpressionType, Z3Param> for Z3Solver {
     #[logfn_inputs(TRACE)]
     fn get_as_smt_predicate(&self, mirai_expression: &Expression) -> Z3ExpressionType {
         let _guard = Z3_MUTEX.lock().unwrap();
-        self.get_as_bool_z3_ast(mirai_expression)
+        // self.latest_param_map.replace(t) = Rc::new(RefCell::new(HashMap::new()));
+        (self.get_as_bool_z3_ast(mirai_expression), self.latest_param_map.clone())
     }
 
     #[logfn_inputs(TRACE)]
@@ -236,11 +301,14 @@ impl SmtSolver<Z3ExpressionType, Z3Param> for Z3Solver {
             
             for i in 0..num_consts{
                 let const_decl = z3_sys::Z3_model_get_const_decl(self.z3_context, model, i);   
-                let val = Z3Param::new(self.z3_context, model, const_decl, mirai_expr.clone());
+                let val = Z3Param::new(self.z3_context, model, const_decl, &self.latest_param_map.as_ref().borrow());
+                println!("{:?}", val);
                 param_vals.push(val);
             }
             
         }
+
+        println!("{:?}", self.latest_param_map);
         param_vals
     }
 
@@ -256,7 +324,7 @@ impl SmtSolver<Z3ExpressionType, Z3Param> for Z3Solver {
 
     #[logfn_inputs(TRACE)]
     fn invert_predicate(&self, expression: &Z3ExpressionType) -> Z3ExpressionType {
-        unsafe { z3_sys::Z3_mk_not(self.z3_context, *expression) }
+        unsafe { (z3_sys::Z3_mk_not(self.z3_context, expression.0), expression.1.clone()) }
     }
 
     #[logfn_inputs(TRACE)]
@@ -281,7 +349,7 @@ impl SmtSolver<Z3ExpressionType, Z3Param> for Z3Solver {
 }
 
 impl Z3Solver {
-    fn as_debug_string_helper(&self, expression: Z3ExpressionType) -> String {
+    fn as_debug_string_helper(&self, expression: z3_sys::Z3_ast) -> String {
         unsafe {
             let debug_str_bytes = z3_sys::Z3_ast_to_string(self.z3_context, expression);
             let debug_str = CStr::from_ptr(debug_str_bytes);
@@ -290,11 +358,11 @@ impl Z3Solver {
     }
 
     #[logfn_inputs(TRACE)]
-    fn boolean_join(&self, left: &Rc<AbstractValue>, right: &Rc<AbstractValue>) -> z3_sys::Z3_ast {
+    fn boolean_join(&self, left: &Rc<AbstractValue>, right: &Rc<AbstractValue>, expression: &Expression) -> z3_sys::Z3_ast {
         let left_ast = self.get_as_bool_z3_ast(&left.expression);
         let right_ast = self.get_as_bool_z3_ast(&right.expression);
         unsafe {
-            let sym = self.get_symbol_for(self);
+            let sym = self.get_symbol_for(self); // TODO figure out abstract val for here
             let condition_ast = z3_sys::Z3_mk_const(self.z3_context, sym, self.bool_sort);
             z3_sys::Z3_mk_ite(self.z3_context, condition_ast, left_ast, right_ast)
         }
@@ -406,7 +474,7 @@ impl Z3Solver {
             Expression::Or { left, right } => {
                 self.general_boolean_op(left, right, z3_sys::Z3_mk_or)
             }
-            Expression::Reference(path) => self.general_reference(path),
+            Expression::Reference(path) => self.general_reference(path, expression),
             Expression::Shl { left, right } => {
                 self.bv_binary(128, left, right, z3_sys::Z3_mk_bvshl)
             }
@@ -648,7 +716,7 @@ impl Z3Solver {
     }
 
     #[logfn_inputs(TRACE)]
-    fn general_reference(&self, path: &Rc<Path>) -> z3_sys::Z3_ast {
+    fn general_reference(&self, path: &Rc<Path>, expression: &Expression) -> z3_sys::Z3_ast {
         unsafe {
             let path_symbol = self.get_symbol_for(path);
             z3_sys::Z3_mk_const(self.z3_context, path_symbol, self.any_sort)
@@ -793,7 +861,7 @@ impl Z3Solver {
                 // A variable is an unknown value of a place in memory.
                 // Therefore, returns an unknown tag check via the logical predicate has_tag(path, tag).
                 unsafe {
-                    let path_symbol = self.get_symbol_for(path);
+                    let path_symbol = self.get_symbol_for(path.clone());
                     let path_arg = z3_sys::Z3_mk_const(self.z3_context, path_symbol, self.any_sort);
                     let tag_symbol = self.get_symbol_for(tag);
                     let tag_arg = z3_sys::Z3_mk_const(self.z3_context, tag_symbol, self.any_sort);
@@ -985,9 +1053,13 @@ impl Z3Solver {
     fn get_symbol_for<T>(&self, value: T) -> z3_sys::Z3_symbol
     where
         T: Debug,
+        Combined: From<T>,
     {
-        let sym_str = CString::new(format!("{value:?}")).unwrap();
-        unsafe { z3_sys::Z3_mk_string_symbol(self.z3_context, sym_str.into_raw()) }
+        let sym_str = format!("{value:?}");
+        self.latest_param_map.borrow_mut().insert(sym_str.clone(), Combined::from(value));
+
+        let sym_cstr = CString::new(sym_str).unwrap();
+        unsafe { z3_sys::Z3_mk_string_symbol(self.z3_context, sym_cstr.into_raw()) }
     }
 
     #[logfn_inputs(TRACE)]
@@ -1807,7 +1879,7 @@ impl Z3Solver {
                     )
                 }
             }
-            Expression::Join { left, right } => self.boolean_join(left, right),
+            Expression::Join { left, right } => self.boolean_join(left, right, expression),
             Expression::Reference(path) => unsafe {
                 let path_symbol = self.get_symbol_for(path);
                 z3_sys::Z3_mk_const(self.z3_context, path_symbol, self.bool_sort)
