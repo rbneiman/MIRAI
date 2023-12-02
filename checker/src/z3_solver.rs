@@ -105,6 +105,7 @@ impl From<&Z3Solver> for Combined{
     }
 }
 
+#[derive(Clone)]
 pub struct Z3Param {
     val: SmtParamValue,
     decl_name: String,
@@ -150,7 +151,7 @@ impl Z3Param{
         let assign_bytes = z3_sys::Z3_ast_to_string(context, assignment.clone());
         let assign_str = CStr::from_ptr(assign_bytes).to_str().unwrap().to_string();
 
-        
+
 
         let mirai_expr = param_map.get(&decl_name).and_then(|v| Some(v.clone()));
 
@@ -158,9 +159,28 @@ impl Z3Param{
         Z3Param { val, decl_name, mirai_expr, debug_str }
     }
 
-    
-    fn get_name(&self) -> &String {
+
+    pub fn get_name(&self) -> &String {
         &self.decl_name
+    }
+
+    pub fn get_initializer(&self) -> String {
+        let mut result = String::from ("let ");
+        result.push_str(&self.decl_name);
+        result.push_str(" = ");
+        match self.val {
+            SmtParamValue::Bool{val} => {
+                result.push_str(&val.to_string());
+            }
+            SmtParamValue::Numeral{val} => {
+                result.push_str(&val.to_string());
+            }
+            SmtParamValue::Unknown => {
+                return String::new();
+            }
+        }
+        result.push_str(";");
+        result
     }
 }
 
@@ -298,17 +318,16 @@ impl SmtSolver<Z3ExpressionType, Z3Param> for Z3Solver {
         unsafe{
             let model = z3_sys::Z3_solver_get_model(self.z3_context, self.z3_solver);
             let num_consts = z3_sys::Z3_model_get_num_consts(self.z3_context, model);
-            
+
             for i in 0..num_consts{
-                let const_decl = z3_sys::Z3_model_get_const_decl(self.z3_context, model, i);   
+                let const_decl = z3_sys::Z3_model_get_const_decl(self.z3_context, model, i);
                 let val = Z3Param::new(self.z3_context, model, const_decl, &self.latest_param_map.as_ref().borrow());
-                println!("{:?}", val);
+                // println!("{:?}", val);
                 param_vals.push(val);
             }
-            
+
         }
 
-        println!("{:?}", self.latest_param_map);
         param_vals
     }
 

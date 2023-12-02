@@ -37,6 +37,7 @@ use crate::summaries;
 use crate::summaries::{Precondition, Summary};
 use crate::tag_domain::Tag;
 use crate::type_visitor::{self, TypeCache, TypeVisitor};
+use crate::z3_solver::Z3Param;
 #[cfg(feature = "z3")]
 use crate::z3_solver::Z3Solver;
 use crate::{k_limits, utils};
@@ -232,6 +233,8 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
         };
 
         println!("function name: {:?}", fixed_point_visitor.bv.function_name);
+        let mut testcases: Vec<Vec<Z3Param>> = Vec::new();
+        let mut param_map: HashMap<String, Z3Param> = HashMap::new();
         for condition in &fixed_point_visitor.bv.disjuncts {
             let mut found_subexpression = false;
             for condition_check in &fixed_point_visitor.bv.disjuncts {
@@ -247,9 +250,28 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
             solver.assert(&expression);
             if solver.solve() == SmtResult::Satisfiable {
                 println!("cond: {:?}", condition);
-                // println!("model:\n{}", solver.get_model_as_string());
-                println!("params: {:?}", solver.get_model_params(&condition.expression));
+                testcases.push(solver.get_model_params(&condition.expression));
             }
+        }
+
+        for testcase in &testcases {
+            for param in testcase {
+                param_map.insert(param.get_name().clone(), param.clone());
+            }
+        }
+
+        for testcase in &testcases {
+            let mut testcase_string = String::new();
+            let mut map = param_map.clone();
+            for param in testcase {
+                    testcase_string.push_str(&param.get_initializer());
+                map.remove(param.get_name());
+            }
+            for (_, value) in map.iter() {
+                // Add default value for unused params
+                testcase_string.push_str(&value.get_initializer());
+            }
+            println!("{}", testcase_string);
         }
 
         if !fixed_point_visitor.bv.analysis_is_incomplete
