@@ -16,7 +16,7 @@ use rpds::HashTrieMap;
 use mirai_annotations::*;
 use rustc_errors::DiagnosticBuilder;
 use rustc_hir::def_id::DefId;
-use rustc_middle::mir;
+use rustc_middle::mir::{self, VarDebugInfoContents};
 use rustc_middle::ty::{AdtDef, Const, GenericArgsRef, Ty, TyCtxt, TyKind, TypeAndMut, UintTy};
 
 use crate::abstract_value::{self, AbstractValue, AbstractValueTrait, BOTTOM};
@@ -196,6 +196,18 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
         if cfg!(DEBUG) {
             utils::pretty_print_mir(self.tcx, self.def_id);
         }
+
+        // Maps ordinal to varName
+        let mut var_map: HashMap<usize, String> = HashMap::new();
+        for var in &self.mir.var_debug_info {
+            match &var.value {
+                VarDebugInfoContents::Place(place) => {
+                    var_map.insert(place.local.as_usize(), var.name.to_string());
+                },
+                _ => {}
+            }
+        }
+
         debug!("entered body of {:?}", self.def_id);
         *self.active_calls_map.entry(self.def_id).or_insert(0) += 1;
         let saved_heap_counter = self.cv.constant_value_cache.swap_heap_counter(0);
@@ -234,8 +246,8 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
 
         println!("function name: {:?}", fixed_point_visitor.bv.function_name);
         let mut testcases: Vec<Vec<Z3Param>> = Vec::new();
-        let mut param_map: BTreeMap<&str, Z3Param> = BTreeMap::new();
-        let mut type_map: HashMap<&str, Ty<'tcx>> = HashMap::new();
+        let mut param_map: BTreeMap<String, Z3Param> = BTreeMap::new();
+        let mut type_map: HashMap<String, Ty<'tcx>> = HashMap::new();
         let mut testcase_strings: HashSet<String> = HashSet::new();
         for condition in &fixed_point_visitor.bv.disjuncts {
             let mut found_subexpression = false;
@@ -258,19 +270,19 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
 
         for testcase in &testcases {
             for param in testcase {
-                param_map.insert(param.get_name().as_str(), param.clone());
+                param_map.insert(param.get_name(&var_map), param.clone());
             }
         }
 
         for (_, param) in param_map.iter() {
-            type_map.insert(param.get_name().as_str(), fixed_point_visitor.bv.type_visitor.get_path_rustc_type(&param.get_path().unwrap(), fixed_point_visitor.bv.current_span));
+            type_map.insert(param.get_name(&var_map), fixed_point_visitor.bv.type_visitor.get_path_rustc_type(&param.get_path().unwrap(), fixed_point_visitor.bv.current_span));
         }
 
         let mut driver_func_string = String::from("fn test_driver(");
         for (_, param) in param_map.iter() {
-            driver_func_string.push_str(&param.get_name());
+            driver_func_string.push_str(&param.get_name(&var_map));
             driver_func_string.push_str(": ");
-            driver_func_string.push_str(type_map.get(param.get_name().as_str()).unwrap().to_string().as_str());
+            driver_func_string.push_str(&type_map.get(&param.get_name(&var_map)).unwrap().to_string());
             driver_func_string.push_str(", ");
         }
         driver_func_string.truncate(driver_func_string.len() - 2);
@@ -279,17 +291,17 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
 
 
         for testcase in &testcases {
-            let mut testcase_string = String::new();
+            let mut testcase_string = String::from("\t");
             let mut map = param_map.clone();
             for param in testcase {
-                testcase_string.push_str(&param.get_initializer());
-                testcase_string.push('\n');
-                map.remove(param.get_name().as_str());
+                testcase_string.push_str(&param.get_initializer(&var_map));
+                testcase_string.push_str("\n\t");
+                map.remove(&param.get_name(&var_map));
             }
             for (_, value) in map.iter() {
                 // Add default value for unused params
-                testcase_string.push_str(&value.get_initializer());
-                testcase_string.push('\n');
+                testcase_string.push_str(&value.get_initializer(&var_map));
+                testcase_string.push_str("\n\t");
             }
             testcase_strings.insert(testcase_string.clone());
         }

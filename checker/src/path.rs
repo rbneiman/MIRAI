@@ -355,6 +355,24 @@ impl PathRoot for Rc<Path> {
 }
 
 impl Path {
+
+    pub fn get_ordinal(&self) -> usize {
+        match &self.value {
+            PathEnum::LocalVariable { ordinal, type_index: _ } => *ordinal,
+            PathEnum::Parameter { ordinal } => *ordinal,
+            PathEnum::PromotedConstant { ordinal } => *ordinal,
+            PathEnum::QualifiedPath { length: _, qualifier, selector: _ } => { qualifier.get_ordinal() },
+            _ => { usize::MAX }
+        }
+    }
+
+    pub fn get_postfix(&self) -> String {
+        match &self.value {
+            PathEnum::QualifiedPath { length: _, qualifier, selector } => { qualifier.get_postfix() + &format!("_{selector:?}") },
+            _ => { String::new() }
+        }
+    }
+
     /// Returns true if the path contains a value whose expression contains a local variable.
     #[logfn_inputs(TRACE)]
     pub fn contains_local_variable(&self, is_post_condition: bool) -> bool {

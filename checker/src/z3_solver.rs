@@ -159,8 +159,21 @@ impl Z3Param{
     }
 
 
-    pub fn get_name(&self) -> &String {
-        &self.decl_name
+    pub fn get_name<'a>(&'a self, var_map: &'a HashMap<usize, String>) -> String {
+        if self.mirai_expr.is_some() {
+            match self.mirai_expr.clone().unwrap() {
+                Combined::Path{val} => {
+                    let ordinal = val.get_ordinal();
+                    let postfix = val.get_postfix();
+                    if let Some(name) = var_map.get(&ordinal) {
+                        return name.to_string() + &postfix;
+                    }
+                }
+                _ => { }
+            }
+        }
+
+        self.decl_name.replace("(", "_").replace(")", "").replace(".", "_")
     }
 
     pub fn get_path(&self) -> Option<Rc<Path>> {
@@ -175,9 +188,9 @@ impl Z3Param{
         return None;
     }
 
-    pub fn get_initializer(&self) -> String {
+    pub fn get_initializer(&self, var_map: &HashMap<usize, String>) -> String {
         let mut result = String::from ("let ");
-        result.push_str(&self.decl_name);
+        result.push_str(self.get_name(var_map).as_str());
         result.push_str(" = ");
         match self.val {
             SmtParamValue::Bool{val} => {
