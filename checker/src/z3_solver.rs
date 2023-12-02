@@ -7,7 +7,6 @@
 use crate::abstract_value::AbstractValue;
 use crate::abstract_value::AbstractValueTrait;
 use crate::constant_domain::ConstantDomain;
-use crate::expression;
 use crate::expression::{Expression, ExpressionType};
 use crate::path::Path;
 use crate::smt_solver::SmtParam;
@@ -162,6 +161,18 @@ impl Z3Param{
 
     pub fn get_name(&self) -> &String {
         &self.decl_name
+    }
+
+    pub fn get_path(&self) -> Option<Rc<Path>> {
+        if self.mirai_expr.is_some() {
+            match self.mirai_expr.clone().unwrap() {
+                Combined::Path{val} => {
+                    return Some(val);
+                }
+                _ => { return None; }
+            }
+        }
+        return None;
     }
 
     pub fn get_initializer(&self) -> String {

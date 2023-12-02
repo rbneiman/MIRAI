@@ -4,7 +4,7 @@
 // LICENSE file in the root directory of this source tree.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, BTreeMap};
 use std::convert::TryFrom;
 use std::fmt::{Debug, Formatter, Result};
 use std::rc::Rc;
@@ -234,7 +234,9 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
 
         println!("function name: {:?}", fixed_point_visitor.bv.function_name);
         let mut testcases: Vec<Vec<Z3Param>> = Vec::new();
-        let mut param_map: HashMap<String, Z3Param> = HashMap::new();
+        let mut param_map: BTreeMap<&str, Z3Param> = BTreeMap::new();
+        let mut type_map: HashMap<&str, Ty<'tcx>> = HashMap::new();
+        let mut testcase_strings: HashSet<String> = HashSet::new();
         for condition in &fixed_point_visitor.bv.disjuncts {
             let mut found_subexpression = false;
             for condition_check in &fixed_point_visitor.bv.disjuncts {
@@ -256,21 +258,43 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
 
         for testcase in &testcases {
             for param in testcase {
-                param_map.insert(param.get_name().clone(), param.clone());
+                param_map.insert(param.get_name().as_str(), param.clone());
             }
         }
+
+        for (_, param) in param_map.iter() {
+            type_map.insert(param.get_name().as_str(), fixed_point_visitor.bv.type_visitor.get_path_rustc_type(&param.get_path().unwrap(), fixed_point_visitor.bv.current_span));
+        }
+
+        let mut driver_func_string = String::from("fn test_driver(");
+        for (_, param) in param_map.iter() {
+            driver_func_string.push_str(&param.get_name());
+            driver_func_string.push_str(": ");
+            driver_func_string.push_str(type_map.get(param.get_name().as_str()).unwrap().to_string().as_str());
+            driver_func_string.push_str(", ");
+        }
+        driver_func_string.truncate(driver_func_string.len() - 2);
+        driver_func_string.push_str(") {\n\n\n}");
+        println!("{}", driver_func_string);
+
 
         for testcase in &testcases {
             let mut testcase_string = String::new();
             let mut map = param_map.clone();
             for param in testcase {
-                    testcase_string.push_str(&param.get_initializer());
-                map.remove(param.get_name());
+                testcase_string.push_str(&param.get_initializer());
+                testcase_string.push('\n');
+                map.remove(param.get_name().as_str());
             }
             for (_, value) in map.iter() {
                 // Add default value for unused params
                 testcase_string.push_str(&value.get_initializer());
+                testcase_string.push('\n');
             }
+            testcase_strings.insert(testcase_string.clone());
+        }
+
+        for testcase_string in testcase_strings {
             println!("{}", testcase_string);
         }
 
