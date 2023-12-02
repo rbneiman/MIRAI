@@ -7,6 +7,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, BTreeMap};
 use std::convert::TryFrom;
 use std::fmt::{Debug, Formatter, Result};
+use std::fs::File;
+use std::io::Write;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -268,46 +270,67 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
             }
         }
 
-        for testcase in &testcases {
-            for param in testcase {
-                param_map.insert(param.get_name(&var_map), param.clone());
+        if !testcases.is_empty() {
+            for testcase in &testcases {
+                for param in testcase {
+                    param_map.insert(param.get_name(&var_map), param.clone());
+                }
             }
-        }
 
-        for (_, param) in param_map.iter() {
-            type_map.insert(param.get_name(&var_map), fixed_point_visitor.bv.type_visitor.get_path_rustc_type(&param.get_path().unwrap(), fixed_point_visitor.bv.current_span));
-        }
-
-        let mut driver_func_string = String::from("fn test_driver(");
-        for (_, param) in param_map.iter() {
-            driver_func_string.push_str(&param.get_name(&var_map));
-            driver_func_string.push_str(": ");
-            driver_func_string.push_str(&type_map.get(&param.get_name(&var_map)).unwrap().to_string());
-            driver_func_string.push_str(", ");
-        }
-        driver_func_string.truncate(driver_func_string.len() - 2);
-        driver_func_string.push_str(") {\n\n\n}");
-        println!("{}", driver_func_string);
-
-
-        for testcase in &testcases {
-            let mut testcase_string = String::from("\t");
-            let mut map = param_map.clone();
-            for param in testcase {
-                testcase_string.push_str(&param.get_initializer(&var_map));
-                testcase_string.push_str("\n\t");
-                map.remove(&param.get_name(&var_map));
+            for (_, param) in param_map.iter() {
+                type_map.insert(param.get_name(&var_map), fixed_point_visitor.bv.type_visitor.get_path_rustc_type(&param.get_path().unwrap(), fixed_point_visitor.bv.current_span));
             }
-            for (_, value) in map.iter() {
-                // Add default value for unused params
-                testcase_string.push_str(&value.get_initializer(&var_map));
-                testcase_string.push_str("\n\t");
-            }
-            testcase_strings.insert(testcase_string.clone());
-        }
 
-        for testcase_string in testcase_strings {
-            println!("{}", testcase_string);
+            let error = "failed to write to file";
+            let fn_name = fixed_point_visitor.bv.function_name.replace(".", "_");
+            let dir = std::path::Path::new("generated_tests/");
+            std::fs::create_dir_all(dir).unwrap();
+            let file_res = File::create(format!("{}/{}_tests.rs", dir.to_str().unwrap(), fn_name));
+            if file_res.is_ok() {
+                let mut file = file_res.unwrap();
+                let driver_func_name = format!("{}_driver", fn_name);
+                let mut driver_func_string = format!("fn {}(", driver_func_name);
+                for (_, param) in param_map.iter() {
+                    driver_func_string.push_str(&param.get_name(&var_map));
+                    driver_func_string.push_str(": ");
+                    driver_func_string.push_str(&type_map.get(&param.get_name(&var_map)).unwrap().to_string());
+                    driver_func_string.push_str(", ");
+                }
+                driver_func_string.truncate(driver_func_string.len() - 2);
+                driver_func_string.push_str(") {\n    //TODO: Fill in test driver function\n\n}\n");
+                writeln!(file ,"{}", driver_func_string).expect(error);
+
+                for testcase in &testcases {
+                    let mut testcase_string = String::from("        ");
+                    let mut map = param_map.clone();
+                    for param in testcase {
+                        testcase_string.push_str(&param.get_initializer(&var_map));
+                        testcase_string.push_str("\n        ");
+                        map.remove(&param.get_name(&var_map));
+                    }
+                    for (_, value) in map.iter() {
+                        // Add default value for unused params
+                        testcase_string.push_str(&value.get_initializer(&var_map));
+                        testcase_string.push_str("\n        ");
+                    }
+                    testcase_strings.insert(testcase_string.clone());
+                }
+
+                writeln!(file, "#[cfg(test)]\nmod {}_tests {{\n    use super::*;\n", fn_name).expect(error);
+
+                for (i, testcase_string) in testcase_strings.iter().enumerate() {
+                    let mut test_fn_string = format!("    #[test]\n    fn test_{}() {{\n{}\n        {}(", i, testcase_string, driver_func_name);
+                    for (_, param) in param_map.iter() {
+                        test_fn_string.push_str(&param.get_name(&var_map));
+                        test_fn_string.push_str(", ");
+                    }
+                    test_fn_string.truncate(test_fn_string.len() - 2);
+                    test_fn_string.push_str(");\n    }\n");
+
+                    writeln!(file ,"{}", test_fn_string).expect(error);
+                }
+                writeln!(file ,"}}").expect(error);
+            }
         }
 
         if !fixed_point_visitor.bv.analysis_is_incomplete
