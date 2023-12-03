@@ -40,10 +40,15 @@ use crate::summaries::{Precondition, Summary};
 use crate::tag_domain::Tag;
 use crate::type_visitor::{self, TypeCache, TypeVisitor};
 use crate::z3_solver::Z3Param;
+use lazy_static::lazy_static;
+use std::sync::Mutex;
 #[cfg(feature = "z3")]
 use crate::z3_solver::Z3Solver;
 use crate::{k_limits, utils};
 
+lazy_static! {
+    static ref ANALYZED_FUNCTIONS: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+}
 /// Holds the state for the function body visitor.
 pub struct BodyVisitor<'analysis, 'compilation, 'tcx> {
     pub cv: &'analysis mut CrateVisitor<'compilation, 'tcx>,
@@ -246,90 +251,98 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
             ..Summary::default()
         };
 
-        println!("function name: {:?}", fixed_point_visitor.bv.function_name);
-        let mut testcases: Vec<Vec<Z3Param>> = Vec::new();
-        let mut param_map: BTreeMap<String, Z3Param> = BTreeMap::new();
-        let mut type_map: HashMap<String, Ty<'tcx>> = HashMap::new();
-        let mut testcase_strings: HashSet<String> = HashSet::new();
-        for condition in &fixed_point_visitor.bv.disjuncts {
-            let mut found_subexpression = false;
-            for condition_check in &fixed_point_visitor.bv.disjuncts {
-                if condition != condition_check && condition_check.subexpression(&condition) {
-                    found_subexpression = true;
+        let mut analyzed_funcs = ANALYZED_FUNCTIONS.lock().unwrap();
+        if !fixed_point_visitor.bv.function_name.contains("core.fmt") && !analyzed_funcs.contains(&fixed_point_visitor.bv.function_name.to_string()) {
+            println!("function name: {:?}", fixed_point_visitor.bv.function_name);
+            analyzed_funcs.insert(fixed_point_visitor.bv.function_name.to_string());
+            let mut testcases: Vec<Vec<Z3Param>> = Vec::new();
+            let mut param_map: BTreeMap<String, Z3Param> = BTreeMap::new();
+            let mut type_map: HashMap<String, Ty<'tcx>> = HashMap::new();
+            let mut testcase_strings: HashSet<String> = HashSet::new();
+            for condition in &fixed_point_visitor.bv.disjuncts {
+                let mut found_subexpression = false;
+                for condition_check in &fixed_point_visitor.bv.disjuncts {
+                    if condition != condition_check && condition_check.subexpression(&condition) {
+                        found_subexpression = true;
+                    }
                 }
-            }
-            if found_subexpression {
-                continue;
-            }
-            let solver = Z3Solver::new();
-            let expression = solver.get_as_smt_predicate(&condition.expression);
-            solver.assert(&expression);
-            if solver.solve() == SmtResult::Satisfiable {
-                println!("cond: {:?}", condition);
-                testcases.push(solver.get_model_params(&condition.expression));
-            }
-        }
-
-        if !testcases.is_empty() {
-            for testcase in &testcases {
-                for param in testcase {
-                    param_map.insert(param.get_name(&var_map), param.clone());
+                if found_subexpression {
+                    continue;
+                }
+                let solver = Z3Solver::new();
+                let expression = solver.get_as_smt_predicate(&condition.expression);
+                solver.assert(&expression);
+                if solver.solve() == SmtResult::Satisfiable {
+                    println!("cond: {:?}", condition);
+                    testcases.push(solver.get_model_params(&condition.expression));
                 }
             }
 
-            for (_, param) in param_map.iter() {
-                type_map.insert(param.get_name(&var_map), fixed_point_visitor.bv.type_visitor.get_path_rustc_type(&param.get_path().unwrap(), fixed_point_visitor.bv.current_span));
-            }
-
-            let error = "failed to write to file";
-            let fn_name = fixed_point_visitor.bv.function_name.replace(".", "_");
-            let dir = std::path::Path::new("generated_tests/");
-            std::fs::create_dir_all(dir).unwrap();
-            let file_res = File::create(format!("{}/{}_tests.rs", dir.to_str().unwrap(), fn_name));
-            if file_res.is_ok() {
-                let mut file = file_res.unwrap();
-                let driver_func_name = format!("{}_driver", fn_name);
-                let mut driver_func_string = format!("fn {}(", driver_func_name);
-                for (_, param) in param_map.iter() {
-                    driver_func_string.push_str(&param.get_name(&var_map));
-                    driver_func_string.push_str(": ");
-                    driver_func_string.push_str(&type_map.get(&param.get_name(&var_map)).unwrap().to_string());
-                    driver_func_string.push_str(", ");
-                }
-                driver_func_string.truncate(driver_func_string.len() - 2);
-                driver_func_string.push_str(") {\n    //TODO: Fill in test driver function\n\n}\n");
-                writeln!(file ,"{}", driver_func_string).expect(error);
-
+            if !testcases.is_empty() {
                 for testcase in &testcases {
-                    let mut testcase_string = String::from("        ");
-                    let mut map = param_map.clone();
                     for param in testcase {
-                        testcase_string.push_str(&param.get_initializer(&var_map));
-                        testcase_string.push_str("\n        ");
-                        map.remove(&param.get_name(&var_map));
+                        param_map.insert(param.get_name(&var_map), param.clone());
                     }
-                    for (_, value) in map.iter() {
-                        // Add default value for unused params
-                        testcase_string.push_str(&value.get_initializer(&var_map));
-                        testcase_string.push_str("\n        ");
-                    }
-                    testcase_strings.insert(testcase_string.clone());
                 }
 
-                writeln!(file, "#[cfg(test)]\nmod {}_tests {{\n    use super::*;\n", fn_name).expect(error);
+                for (_, param) in param_map.iter() {
+                    type_map.insert(param.get_name(&var_map), fixed_point_visitor.bv.type_visitor.get_path_rustc_type(&param.get_path().unwrap(), fixed_point_visitor.bv.current_span));
+                }
 
-                for (i, testcase_string) in testcase_strings.iter().enumerate() {
-                    let mut test_fn_string = format!("    #[test]\n    fn test_{}() {{\n{}\n        {}(", i, testcase_string, driver_func_name);
+                let error = "failed to write to file";
+                let fn_name = fixed_point_visitor.bv.function_name.replace(".", "_");
+                let dir = std::path::Path::new("generated_tests/");
+                std::fs::create_dir_all(dir).unwrap();
+                let file_res = File::create(format!("{}/{}_tests.rs", dir.to_str().unwrap(), fn_name));
+                if file_res.is_ok() {
+                    let mut file = file_res.unwrap();
+                    let driver_func_name = format!("{}_driver", fn_name);
+                    let mut driver_func_string = format!("fn {}(", driver_func_name);
                     for (_, param) in param_map.iter() {
-                        test_fn_string.push_str(&param.get_name(&var_map));
-                        test_fn_string.push_str(", ");
+                        driver_func_string.push_str(&param.get_name(&var_map));
+                        driver_func_string.push_str(": ");
+                        driver_func_string.push_str(&type_map.get(&param.get_name(&var_map)).unwrap().to_string());
+                        driver_func_string.push_str(", ");
                     }
-                    test_fn_string.truncate(test_fn_string.len() - 2);
-                    test_fn_string.push_str(");\n    }\n");
+                    driver_func_string.truncate(driver_func_string.len() - 2);
+                    driver_func_string.push_str(") {\n    //TODO: Fill in test driver function\n\n}\n");
+                    writeln!(file ,"{}", driver_func_string).expect(error);
 
-                    writeln!(file ,"{}", test_fn_string).expect(error);
+                    for testcase in &testcases {
+                        let mut testcase_string = String::from("        ");
+                        let mut string_map: HashMap<String, String> = HashMap::new();
+                        for param in testcase {
+                            string_map.insert(param.get_name(&var_map), param.get_initializer(&var_map));
+                        }
+                        for (_, value) in param_map.iter() {
+                            // Add default value for unused params
+                            let var_name = value.get_name(&var_map);
+                            if string_map.contains_key(&var_name) {
+                                testcase_string.push_str(string_map.get(&var_name).unwrap());
+                            }
+                            else {
+                                testcase_string.push_str(&value.get_initializer(&var_map));
+                            }
+                            testcase_string.push_str("\n        ");
+                        }
+                        testcase_strings.insert(testcase_string.clone());
+                    }
+
+                    writeln!(file, "#[cfg(test)]\nmod {}_tests {{\n    use super::*;\n", fn_name).expect(error);
+
+                    for (i, testcase_string) in testcase_strings.iter().enumerate() {
+                        let mut test_fn_string = format!("    #[test]\n    fn test_{}() {{\n{}\n        {}(", i, testcase_string, driver_func_name);
+                        for (_, param) in param_map.iter() {
+                            test_fn_string.push_str(&param.get_name(&var_map));
+                            test_fn_string.push_str(", ");
+                        }
+                        test_fn_string.truncate(test_fn_string.len() - 2);
+                        test_fn_string.push_str(");\n    }\n");
+
+                        writeln!(file ,"{}", test_fn_string).expect(error);
+                    }
+                    writeln!(file ,"}}").expect(error);
                 }
-                writeln!(file ,"}}").expect(error);
             }
         }
 

@@ -99,7 +99,7 @@ impl From<&Tag> for Combined{
 }
 
 impl From<&Z3Solver> for Combined{
-    fn from(val: &Z3Solver) -> Self {
+    fn from(_: &Z3Solver) -> Self {
         Combined::Solver {  }
     }
 }
