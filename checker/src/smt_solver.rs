@@ -3,7 +3,16 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
+use std::collections::HashMap;
+use std::fmt::Formatter;
+use std::fmt::Debug;
+use std::rc::Rc;
+
+use crate::abstract_value::AbstractValue;
+use crate::constant_domain::ConstantDomain;
 use crate::expression::Expression;
+use crate::path::Path;
+use crate::tag_domain::Tag;
 
 use mirai_annotations::{get_model_field, precondition, set_model_field};
 use serde::{Deserialize, Serialize};
@@ -26,14 +35,89 @@ pub enum SmtParamValue{
     Unknown
 }
 
-// #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Hash)]
+impl std::fmt::Display for SmtParamValue{
+
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&match self {
+            SmtParamValue::Bool { val } => val.to_string(),
+            SmtParamValue::Numeral { val } => val.to_string(),
+            _ => "_".to_string(),
+        }, f)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Combined{
+    Path{val: Rc<Path>},
+    AbstractValue{val: Rc<AbstractValue>},
+    Expression{val: Expression},
+    Tag{val: Tag},
+    ConstantDomain{val: ConstantDomain},
+    Solver{}
+}
+
+impl From<&Rc<Path>> for Combined{
+    fn from(val: &Rc<Path>) -> Self {
+        Combined::Path{val: val.clone()}
+    }
+}
+
+impl From<Rc<Path>> for Combined{
+    fn from(val: Rc<Path>) -> Self {
+        Combined::Path{val}
+    }
+}
+
+impl From<Rc<AbstractValue>> for Combined{
+    fn from(val: Rc<AbstractValue>) -> Self {
+        Combined::AbstractValue{val}
+    }
+}
+
+impl From<&Expression> for Combined{
+    fn from(val: &Expression) -> Self {
+        Combined::Expression{val: val.clone()}
+    }
+}
+
+impl From<&ConstantDomain> for Combined{
+    fn from(val: &ConstantDomain) -> Self {
+        Combined::ConstantDomain { val: val.clone()}
+    }
+}
+
+impl From<&Tag> for Combined{
+    fn from(val: &Tag) -> Self {
+        Combined::Tag { val: val.clone()}
+    }
+}
+
 pub trait SmtParam{
 
+    fn get_debug_name(&self, debug_map: &HashMap<usize, Rc<String>>) -> String;
+
+    fn get_name(&self) -> &str;
+
+    fn get_expr(&self) -> Option<Combined>;
+
+    fn get_path(&self) -> Option<Rc<Path>>;
+
+    fn get_initializer(&self, debug_map: &HashMap<usize, Rc<String>>) -> Option<String>;
+
     fn get_val(&self) -> SmtParamValue;
+
+    fn get_debug_string(&self) -> &str;
+}
+
+impl Debug for dyn SmtParam {
+    
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        self.get_debug_string().fmt(f)
+    }
 }
 
 /// The functionality that a solver must expose in order for MIRAI to use it.
-pub trait SmtSolver<SmtExpressionType, SmtParam> {
+pub trait SmtSolver<SmtExpressionType> {
     /// Returns a string representation of the given expression for use in debugging.
     fn as_debug_string(&self, expression: &SmtExpressionType) -> String;
 
@@ -54,7 +138,7 @@ pub trait SmtSolver<SmtExpressionType, SmtParam> {
     /// assertions in the solver. Can only be called after self.solve return SmtResult::Satisfiable.
     fn get_model_as_string(&self) -> String;
 
-    fn get_model_params(&self, mirai_expr: &Expression) -> Vec<SmtParam>;
+    fn get_model_params(&self, mirai_expr: &Expression) -> Vec<Box<dyn SmtParam>>;
 
     /// Provides a string that contains a listing of all of the definitions and assertions that
     /// have been added to the solver.
@@ -92,7 +176,7 @@ pub trait SmtSolver<SmtExpressionType, SmtParam> {
 #[derive(Default)]
 pub struct SolverStub {}
 
-impl SmtSolver<usize, usize> for SolverStub {
+impl SmtSolver<usize> for SolverStub {
     fn as_debug_string(&self, _: &usize) -> String {
         String::from("not implemented")
     }
@@ -111,7 +195,7 @@ impl SmtSolver<usize, usize> for SolverStub {
         String::from("not implemented")
     }
 
-    fn get_model_params(&self, mirai_expr: &Expression) -> Vec<usize>{
+    fn get_model_params(&self, _mirai_expr: &Expression) -> Vec<Box<dyn SmtParam>>{
         vec![]
     }
 

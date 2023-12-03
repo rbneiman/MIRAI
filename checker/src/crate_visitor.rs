@@ -33,6 +33,7 @@ use crate::known_names::KnownNamesCache;
 use crate::options::Options;
 use crate::summaries::PersistentSummaryCache;
 use crate::tag_domain::Tag;
+use crate::test_gen::TestGen;
 use crate::type_visitor::TypeCache;
 use crate::utils;
 
@@ -58,6 +59,7 @@ pub struct CrateVisitor<'compilation, 'tcx> {
     pub type_cache: Rc<RefCell<TypeCache<'tcx>>>,
     pub test_run: bool,
     pub call_graph: CallGraph<'tcx>,
+    pub test_gen: TestGen<'tcx>
 }
 
 impl<'compilation, 'tcx> Debug for CrateVisitor<'compilation, 'tcx> {

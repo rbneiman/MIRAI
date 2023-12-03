@@ -4,7 +4,7 @@
 // LICENSE file in the root directory of this source tree.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, BTreeMap};
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::{Debug, Formatter, Result};
 use std::rc::Rc;
@@ -16,7 +16,7 @@ use rpds::HashTrieMap;
 use mirai_annotations::*;
 use rustc_errors::DiagnosticBuilder;
 use rustc_hir::def_id::DefId;
-use rustc_middle::mir;
+use rustc_middle::mir::{self, VarDebugInfoContents};
 use rustc_middle::ty::{AdtDef, Const, GenericArgsRef, Ty, TyCtxt, TyKind, TypeAndMut, UintTy};
 
 use crate::abstract_value::{self, AbstractValue, AbstractValueTrait, BOTTOM};
@@ -32,12 +32,11 @@ use crate::path::{Path, PathEnum, PathSelector};
 use crate::path::{PathRefinement, PathRoot};
 #[cfg(not(feature = "z3"))]
 use crate::smt_solver::SolverStub;
-use crate::smt_solver::{SmtResult, SmtSolver};
+use crate::smt_solver::{SmtResult, SmtSolver, SmtParam};
 use crate::summaries;
 use crate::summaries::{Precondition, Summary};
 use crate::tag_domain::Tag;
 use crate::type_visitor::{self, TypeCache, TypeVisitor};
-use crate::z3_solver::Z3Param;
 #[cfg(feature = "z3")]
 use crate::z3_solver::Z3Solver;
 use crate::{k_limits, utils};
@@ -196,6 +195,19 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
         if cfg!(DEBUG) {
             utils::pretty_print_mir(self.tcx, self.def_id);
         }
+
+
+        // Maps ordinal to varName
+        let mut var_map: HashMap<usize, Rc<String>> = HashMap::new();
+        for var in &self.mir.var_debug_info {
+            match &var.value {
+                VarDebugInfoContents::Place(place) => {
+                    var_map.insert(place.local.as_usize(), Rc::new(var.name.to_string()));
+                },
+                _ => {}
+            }
+        }
+
         debug!("entered body of {:?}", self.def_id);
         *self.active_calls_map.entry(self.def_id).or_insert(0) += 1;
         let saved_heap_counter = self.cv.constant_value_cache.swap_heap_counter(0);
@@ -232,11 +244,12 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
             ..Summary::default()
         };
 
-        println!("function name: {:?}", fixed_point_visitor.bv.function_name);
-        let mut testcases: Vec<Vec<Z3Param>> = Vec::new();
-        let mut param_map: BTreeMap<&str, Z3Param> = BTreeMap::new();
-        let mut type_map: HashMap<&str, Ty<'tcx>> = HashMap::new();
-        let mut testcase_strings: HashSet<String> = HashSet::new();
+        
+        let func_def_id = fixed_point_visitor.bv.type_visitor.mir.source.def_id();
+        let func_path_name = fixed_point_visitor.bv.tcx.def_path_str(func_def_id);
+        let mut ind: usize = 0;
+        println!("function name: {:?}", func_path_name);
+        let mut testcases: Vec<(Rc<AbstractValue>, Vec<Box<dyn SmtParam>>)> = Vec::new();
         for condition in &fixed_point_visitor.bv.disjuncts {
             let mut found_subexpression = false;
             for condition_check in &fixed_point_visitor.bv.disjuncts {
@@ -247,56 +260,34 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
             if found_subexpression {
                 continue;
             }
-            let solver = Z3Solver::new();
+
+            let solver = Self::get_solver();
             let expression = solver.get_as_smt_predicate(&condition.expression);
-            solver.assert(&expression);
+            let expression_inv = solver.invert_predicate(&expression);
+            solver.assert(&expression_inv);
             if solver.solve() == SmtResult::Satisfiable {
                 println!("cond: {:?}", condition);
-                testcases.push(solver.get_model_params(&condition.expression));
+                let params: Vec<Box<dyn SmtParam>> = solver.get_model_params(&condition.expression);
+                testcases.push((condition.clone(), params));
             }
         }
 
-        for testcase in &testcases {
-            for param in testcase {
-                param_map.insert(param.get_name().as_str(), param.clone());
+        {
+            
+            for (val, params) in &testcases {
+                fixed_point_visitor.bv.cv.test_gen.add_test(&func_path_name, 
+                    val, 
+                    params, 
+                    ind, 
+                    &fixed_point_visitor.bv.type_visitor, 
+                    fixed_point_visitor.bv.current_span, 
+                    &var_map
+                );
+                ind += 1;
             }
         }
+        
 
-        for (_, param) in param_map.iter() {
-            type_map.insert(param.get_name().as_str(), fixed_point_visitor.bv.type_visitor.get_path_rustc_type(&param.get_path().unwrap(), fixed_point_visitor.bv.current_span));
-        }
-
-        let mut driver_func_string = String::from("fn test_driver(");
-        for (_, param) in param_map.iter() {
-            driver_func_string.push_str(&param.get_name());
-            driver_func_string.push_str(": ");
-            driver_func_string.push_str(type_map.get(param.get_name().as_str()).unwrap().to_string().as_str());
-            driver_func_string.push_str(", ");
-        }
-        driver_func_string.truncate(driver_func_string.len() - 2);
-        driver_func_string.push_str(") {\n\n\n}");
-        println!("{}", driver_func_string);
-
-
-        for testcase in &testcases {
-            let mut testcase_string = String::new();
-            let mut map = param_map.clone();
-            for param in testcase {
-                testcase_string.push_str(&param.get_initializer());
-                testcase_string.push('\n');
-                map.remove(param.get_name().as_str());
-            }
-            for (_, value) in map.iter() {
-                // Add default value for unused params
-                testcase_string.push_str(&value.get_initializer());
-                testcase_string.push('\n');
-            }
-            testcase_strings.insert(testcase_string.clone());
-        }
-
-        for testcase_string in testcase_strings {
-            println!("{}", testcase_string);
-        }
 
         if !fixed_point_visitor.bv.analysis_is_incomplete
             || (elapsed_time_in_seconds < max_analysis_time_for_body

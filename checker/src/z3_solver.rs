@@ -9,6 +9,7 @@ use crate::abstract_value::AbstractValueTrait;
 use crate::constant_domain::ConstantDomain;
 use crate::expression::{Expression, ExpressionType};
 use crate::path::Path;
+use crate::smt_solver::Combined;
 use crate::smt_solver::SmtParam;
 use crate::smt_solver::SmtParamValue;
 use crate::smt_solver::SmtResult;
@@ -24,6 +25,7 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::ffi::{CStr, CString};
 use std::fmt::{Debug, Formatter, Result};
+use std::ops::Add;
 use std::rc::Rc;
 use std::sync::Mutex;
 
@@ -52,59 +54,12 @@ pub struct Z3Solver {
     latest_param_map: Rc<RefCell<HashMap<String, Combined>>>,
 }
 
-#[derive(Clone, Debug)]
-pub enum Combined{
-    Path{val: Rc<Path>},
-    AbstractValue{val: Rc<AbstractValue>},
-    Expression{val: Expression},
-    Tag{val: Tag},
-    ConstantDomain{val: ConstantDomain},
-    Solver{}
-}
-
-impl From<&Rc<Path>> for Combined{
-    fn from(val: &Rc<Path>) -> Self {
-        Combined::Path{val: val.clone()}
-    }
-}
-
-impl From<Rc<Path>> for Combined{
-    fn from(val: Rc<Path>) -> Self {
-        Combined::Path{val}
-    }
-}
-
-impl From<Rc<AbstractValue>> for Combined{
-    fn from(val: Rc<AbstractValue>) -> Self {
-        Combined::AbstractValue{val}
-    }
-}
-
-impl From<&Expression> for Combined{
-    fn from(val: &Expression) -> Self {
-        Combined::Expression{val: val.clone()}
-    }
-}
-
-impl From<&ConstantDomain> for Combined{
-    fn from(val: &ConstantDomain) -> Self {
-        Combined::ConstantDomain { val: val.clone()}
-    }
-}
-
-impl From<&Tag> for Combined{
-    fn from(val: &Tag) -> Self {
-        Combined::Tag { val: val.clone()}
-    }
-}
-
 impl From<&Z3Solver> for Combined{
-    fn from(val: &Z3Solver) -> Self {
+    fn from(_: &Z3Solver) -> Self {
         Combined::Solver {  }
     }
 }
 
-#[derive(Clone)]
 pub struct Z3Param {
     val: SmtParamValue,
     decl_name: String,
@@ -150,34 +105,55 @@ impl Z3Param{
         let assign_bytes = z3_sys::Z3_ast_to_string(context, assignment.clone());
         let assign_str = CStr::from_ptr(assign_bytes).to_str().unwrap().to_string();
 
-
-
         let mirai_expr = param_map.get(&decl_name).and_then(|v| Some(v.clone()));
 
         let debug_str = format!("decl (kind: {:?}, name: {:?}, val: {:?}, expr: {:?}): {} -> {}", decl_kind, decl_name, val, mirai_expr, decl_str, assign_str);
         Z3Param { val, decl_name, mirai_expr, debug_str }
     }
 
+    
+    
+}
 
-    pub fn get_name(&self) -> &String {
-        &self.decl_name
+impl SmtParam for Z3Param{
+
+    fn get_debug_name(&self, debug_map: &HashMap<usize, Rc<String>>) -> String{
+        let name = self.decl_name.replace("(", "_").replace(")", "").replace(".", "_");
+        self.get_path()
+            .and_then(|path| {
+                debug_map.get(&path.get_ordinal())
+                    .map(|debug_name| {
+                        debug_name.as_ref().clone().add(path.get_postfix().as_str())
+                    })
+            }).unwrap_or(name)
     }
 
-    pub fn get_path(&self) -> Option<Rc<Path>> {
-        if self.mirai_expr.is_some() {
-            match self.mirai_expr.clone().unwrap() {
-                Combined::Path{val} => {
-                    return Some(val);
-                }
-                _ => { return None; }
+    fn get_name(&self) -> &str {
+        &self.decl_name.as_str()
+    }
+
+    fn get_expr(&self) -> Option<Combined>{
+        self.mirai_expr.clone().and_then(|v| Some(v.clone()))
+    }
+
+    fn get_path(&self) -> Option<Rc<Path>>{
+        if let Some(expr) = &self.mirai_expr{
+            match expr{
+                Combined::Path { val } => Some(val.clone()),
+                Combined::AbstractValue { val } => Some(Path::get_as_path(val.clone())),
+                Combined::Expression { val } => Some(Path::get_as_path(AbstractValue::make_from(val.clone(), 1))),
+                Combined::Tag { val: _ } => None,
+                Combined::ConstantDomain { val: _ } => None,
+                Combined::Solver {  } => None,
             }
+        }else{
+            None
         }
-        return None;
     }
 
-    pub fn get_initializer(&self) -> String {
+    fn get_initializer(&self, debug_map: &HashMap<usize, Rc<String>>) -> Option<String>{
         let mut result = String::from ("let ");
-        result.push_str(&self.decl_name);
+        result.push_str(&self.get_debug_name(debug_map));
         result.push_str(" = ");
         match self.val {
             SmtParamValue::Bool{val} => {
@@ -187,26 +163,21 @@ impl Z3Param{
                 result.push_str(&val.to_string());
             }
             SmtParamValue::Unknown => {
-                return String::new();
+                return None;
             }
         }
         result.push_str(";");
-        result
+        Some(result)
     }
-}
-
-impl SmtParam for Z3Param{
-
 
     fn get_val(&self) -> SmtParamValue {
         self.val.clone()
     }
-}
 
-impl Debug for Z3Param{
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        self.debug_str.fmt(f)
+    fn get_debug_string(&self) -> &str {
+        &self.debug_str
     }
+
 }
 
 impl Z3Solver {
@@ -274,7 +245,7 @@ impl Default for Z3Solver {
     }
 }
 
-impl SmtSolver<Z3ExpressionType, Z3Param> for Z3Solver {
+impl SmtSolver<Z3ExpressionType> for Z3Solver {
     #[logfn_inputs(TRACE)]
     fn as_debug_string(&self, expression: &Z3ExpressionType) -> String {
         let _guard = Z3_MUTEX.lock().unwrap();
@@ -324,21 +295,23 @@ impl SmtSolver<Z3ExpressionType, Z3Param> for Z3Solver {
     }
 
     #[logfn_inputs(TRACE)]
-    fn get_model_params(&self, mirai_expr: &Expression) -> Vec<Z3Param>{
-        let mut param_vals : Vec<Z3Param> = Vec::new();
+    fn get_model_params(&self, mirai_expr: &Expression) -> Vec<Box<dyn SmtParam>>{
+        let mut param_vals : Vec<Box<dyn SmtParam>> = Vec::new();
         unsafe{
             let model = z3_sys::Z3_solver_get_model(self.z3_context, self.z3_solver);
             let num_consts = z3_sys::Z3_model_get_num_consts(self.z3_context, model);
-
+            
             for i in 0..num_consts{
-                let const_decl = z3_sys::Z3_model_get_const_decl(self.z3_context, model, i);
-                let val = Z3Param::new(self.z3_context, model, const_decl, &self.latest_param_map.as_ref().borrow());
-                // println!("{:?}", val);
+                let const_decl = z3_sys::Z3_model_get_const_decl(self.z3_context, model, i);   
+                let val: Box<dyn SmtParam> = Box::new(Z3Param::new(self.z3_context, model, const_decl, &self.latest_param_map.as_ref().borrow()));
+                println!("{:?}", val);
                 param_vals.push(val);
             }
-
+            
         }
 
+        
+        println!("{:?}", self.latest_param_map);
         param_vals
     }
 

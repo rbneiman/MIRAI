@@ -11,6 +11,7 @@ use crate::known_names::KnownNamesCache;
 use crate::options::Options;
 use crate::summaries::PersistentSummaryCache;
 
+use crate::test_gen::TestGen;
 use crate::type_visitor::TypeCache;
 use crate::utils;
 use log::info;
@@ -152,6 +153,8 @@ impl MiraiCallbacks {
             self.file_name, summary_store_path
         );
         let call_graph_config = self.options.call_graph_config.to_owned();
+        let test_output_dir = self.options.test_output_dir.to_owned();
+
         let mut crate_visitor = CrateVisitor {
             buffered_diagnostics: Vec::new(),
             constant_time_tag_cache: None,
@@ -168,8 +171,10 @@ impl MiraiCallbacks {
             test_run: self.test_run,
             type_cache: Rc::new(RefCell::new(TypeCache::new())),
             call_graph: CallGraph::new(call_graph_config, tcx),
+            test_gen: TestGen::new(test_output_dir, tcx),
         };
         crate_visitor.analyze_some_bodies();
         crate_visitor.call_graph.output();
+        crate_visitor.test_gen.output();
     }
 }

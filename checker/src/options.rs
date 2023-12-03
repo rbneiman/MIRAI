@@ -60,7 +60,13 @@ fn make_options_parser(running_test_harness: bool) -> Command {
         .arg(Arg::new("print_function_names")
             .long("print_function_names")
             .num_args(0)
-            .help("Just print out the signatures of functions in the crate"));
+            .help("Just print out the signatures of functions in the crate"))
+        .arg(Arg::new("test_output_dir")
+            .long("test_output_dir")
+            .num_args(1)
+            .default_value("generated_tests")
+            .help("Path to directory where generated test output will be placed.")
+            .long_help("Path to directory where generated test output will be placed... TODO"));
     if running_test_harness {
         parser = parser.arg(Arg::new("test_only")
             .long("test_only")
@@ -83,6 +89,7 @@ pub struct Options {
     pub statistics: bool,
     pub call_graph_config: Option<String>,
     pub print_function_names: bool,
+    pub test_output_dir: String,
 }
 
 /// Represents diag level.
@@ -234,6 +241,11 @@ impl Options {
         ) {
             self.print_function_names = true;
         }
+
+        if matches.contains_id("test_output_dir"){
+            self.test_output_dir = matches.get_one::<String>("test_output_dir").unwrap().clone();
+        }
+
         args[rustc_args_start..].to_vec()
     }
 }

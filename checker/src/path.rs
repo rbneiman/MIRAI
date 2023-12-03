@@ -70,6 +70,26 @@ impl From<PathEnum> for Path {
 }
 
 impl Path {
+
+    
+    pub fn get_ordinal(&self) -> usize {
+        match &self.value {
+            PathEnum::LocalVariable { ordinal, type_index: _ } => *ordinal,
+            PathEnum::Parameter { ordinal } => *ordinal,
+            PathEnum::PromotedConstant { ordinal } => *ordinal,
+            PathEnum::QualifiedPath { length: _, qualifier, selector: _ } => { qualifier.get_ordinal() },
+            _ => { usize::MAX }
+        }
+    }
+
+    pub fn get_postfix(&self) -> String {
+        match &self.value {
+            PathEnum::QualifiedPath { length: _, qualifier, selector } => { qualifier.get_postfix() + &format!("_{selector:?}") },
+            _ => { String::new() }
+        }
+    }
+
+    
     /// Returns a qualified path of the form root.selectors[0].selectors[1]...
     #[logfn_inputs(TRACE)]
     pub fn add_selectors(root: &Rc<Path>, selectors: &[Rc<PathSelector>]) -> Rc<Path> {

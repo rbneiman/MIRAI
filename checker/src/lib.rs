@@ -91,5 +91,6 @@ pub mod summaries;
 pub mod tag_domain;
 pub mod type_visitor;
 pub mod utils;
+pub mod test_gen;
 #[cfg(feature = "z3")]
 pub mod z3_solver;
