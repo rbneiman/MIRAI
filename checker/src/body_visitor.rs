@@ -244,50 +244,6 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
             ..Summary::default()
         };
 
-        
-        let func_def_id = fixed_point_visitor.bv.type_visitor.mir.source.def_id();
-        let func_path_name = fixed_point_visitor.bv.tcx.def_path_str(func_def_id);
-        let mut ind: usize = 0;
-        println!("function name: {:?}", func_path_name);
-        let mut testcases: Vec<(Rc<AbstractValue>, Vec<Box<dyn SmtParam>>)> = Vec::new();
-        for condition in &fixed_point_visitor.bv.disjuncts {
-            let mut found_subexpression = false;
-            for condition_check in &fixed_point_visitor.bv.disjuncts {
-                if condition != condition_check && condition_check.subexpression(&condition) {
-                    found_subexpression = true;
-                }
-            }
-            if found_subexpression {
-                continue;
-            }
-
-            let solver = Self::get_solver();
-            let expression = solver.get_as_smt_predicate(&condition.expression);
-            let expression_inv = solver.invert_predicate(&expression);
-            solver.assert(&expression_inv);
-            if solver.solve() == SmtResult::Satisfiable {
-                println!("cond: {:?}", condition);
-                let params: Vec<Box<dyn SmtParam>> = solver.get_model_params(&condition.expression);
-                testcases.push((condition.clone(), params));
-            }
-        }
-
-        {
-            
-            for (val, params) in &testcases {
-                fixed_point_visitor.bv.cv.test_gen.add_test(&func_path_name, 
-                    val, 
-                    params, 
-                    ind, 
-                    &fixed_point_visitor.bv.type_visitor, 
-                    fixed_point_visitor.bv.current_span, 
-                    &var_map
-                );
-                ind += 1;
-            }
-        }
-        
-
 
         if !fixed_point_visitor.bv.analysis_is_incomplete
             || (elapsed_time_in_seconds < max_analysis_time_for_body
@@ -299,6 +255,49 @@ impl<'analysis, 'compilation, 'tcx> BodyVisitor<'analysis, 'compilation, 'tcx> {
                 &fixed_point_visitor.block_indices,
                 &mut fixed_point_visitor.terminator_state,
             );
+
+            let func_def_id = fixed_point_visitor.bv.type_visitor.mir.source.def_id();
+            let func_path_name = fixed_point_visitor.bv.tcx.def_path_str(func_def_id);
+            let mut ind: usize = 0;
+            println!("function name: {:?}", func_path_name);
+            let mut testcases: Vec<(Rc<AbstractValue>, Vec<Box<dyn SmtParam>>)> = Vec::new();
+            for condition in &fixed_point_visitor.bv.disjuncts {
+                let mut found_subexpression = false;
+                for condition_check in &fixed_point_visitor.bv.disjuncts {
+                    if condition != condition_check && condition_check.subexpression(&condition) {
+                        found_subexpression = true;
+                    }
+                }
+                if found_subexpression {
+                    continue;
+                }
+    
+                let solver = Self::get_solver();
+                let expression = solver.get_as_smt_predicate(&condition.expression);
+                // let expression_inv = solver.invert_predicate(&expression);
+                solver.assert(&expression);
+                if solver.solve() == SmtResult::Satisfiable {
+                    println!("cond: {:?}", condition);
+                    let params: Vec<Box<dyn SmtParam>> = solver.get_model_params(&condition.expression);
+                    testcases.push((condition.clone(), params));
+                }
+            }
+    
+            {
+                
+                for (val, params) in &testcases {
+                    fixed_point_visitor.bv.cv.test_gen.add_test(&func_path_name, 
+                        val, 
+                        params, 
+                        ind, 
+                        &fixed_point_visitor.bv.type_visitor, 
+                        fixed_point_visitor.bv.current_span, 
+                        &var_map
+                    );
+                    ind += 1;
+                }
+            }
+
             let entry = self.active_calls_map.entry(self.def_id).or_insert(0);
             if *entry <= 1 {
                 self.active_calls_map.remove(&self.def_id);

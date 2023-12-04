@@ -1,9 +1,9 @@
-use std::{fmt::{Debug, Formatter}, rc::Rc, collections::HashMap};
+use std::{fmt::{Debug, Formatter}, rc::Rc, collections::{HashMap, BTreeMap}};
 use log_derive::logfn_inputs;
 use rustc_middle::ty::{Ty, TyCtxt};
 use std::io::Write;
 use crate::{smt_solver::SmtParam, abstract_value::AbstractValue, type_visitor::TypeVisitor, path::PathEnum};
-
+use crate::path::Path;
 
 
 #[derive(Debug)]
@@ -13,13 +13,16 @@ struct ResolvedParam<'tcx>{
     pub type_name: String,
     pub value_string: String,
     pub param_ordinal: Option<usize>,
+    pub related_to: usize,
 }
+
 
 #[derive(Debug)]
 struct FuncArg<'tcx>{
     pub ty: Ty<'tcx>,
-    pub name: Option<Rc<String>>,
+    pub name: Rc<String>,
     pub ordinal: usize,
+    pub related_to: BTreeMap<Rc<String>, Rc<ResolvedParam<'tcx>>>,
 }
 
 #[derive(Debug)]
@@ -31,7 +34,7 @@ struct Testcase<'tcx>{
 #[derive(Debug)]
 struct FuncTestCaseInfo<'tcx>{
     pub func_name: Rc<String>,
-    pub param_map: HashMap<Rc<String>, Rc<ResolvedParam<'tcx>>>,
+    pub param_map: BTreeMap<Rc<String>, Rc<ResolvedParam<'tcx>>>,
     pub testcases: Vec<Testcase<'tcx>>,
     pub args: Vec<FuncArg<'tcx>>,
     pub func_name_raw: Rc<String>,
@@ -42,7 +45,7 @@ struct FuncTestCaseInfo<'tcx>{
 pub struct TestGen<'tcx>{
     test_output_dir: String,
     tcx: TyCtxt<'tcx>,
-    testcase_map: HashMap<Rc<String>, FuncTestCaseInfo<'tcx>>,
+    testcase_map: BTreeMap<Rc<String>, FuncTestCaseInfo<'tcx>>,
 }
 
 impl<'tcx> Debug for TestGen<'tcx> {
@@ -59,13 +62,26 @@ impl<'tcx> TestGen<'tcx> {
         TestGen { 
             test_output_dir: test_output_file,
             tcx,
-            testcase_map: HashMap::new()
+            testcase_map: BTreeMap::new()
         }
     }
 
-    /// Returns the type of the field with the given ordinal.
-    // #[logfn_inputs(TRACE)]
-    // pub fn get_field_type(
+    fn grab_top(path: &Rc<Path>) -> Rc<Path>{
+        let mut last = path;
+        let mut unqualified =  match &path.value{
+            PathEnum::QualifiedPath { qualifier, ..  } => Some(qualifier),
+            _ => None
+        };
+        while let Some(qualified) = unqualified {
+            last = qualified;
+            unqualified =  match &qualified.value{
+                PathEnum::QualifiedPath {  qualifier, .. } => Some(qualifier),
+                _ => None
+            };
+        }
+        last.clone()
+    }
+
 
     #[logfn_inputs(TRACE)]
     pub fn add_test(&mut self, 
@@ -88,12 +104,15 @@ impl<'tcx> TestGen<'tcx> {
                 let (local, local_decl) = local_iter.next().unwrap();
                 let ty = local_decl.ty.clone();
                 let ordinal = local.as_usize();
-                let name = debug_names.get(&ordinal).map(|v| v.clone());
+                let name = debug_names.get(&ordinal).map(|v| v.clone())
+                    .unwrap_or(Rc::new(format!("param_{}", ordinal + 1)));
+                let related_to = BTreeMap::new();
                 
                 let func_arg = FuncArg{
                     ty,
                     name,
                     ordinal,
+                    related_to
                 };
                 args.push(func_arg);
             }
@@ -103,7 +122,7 @@ impl<'tcx> TestGen<'tcx> {
 
             self.testcase_map.insert(function_name_filtered.clone(), FuncTestCaseInfo { 
                 func_name: function_name_filtered.clone(), 
-                param_map: HashMap::new(), 
+                param_map: BTreeMap::new(), 
                 testcases: Vec::new(), 
                 args,
                 func_name_raw: Rc::new(function_name.clone()),
@@ -123,15 +142,23 @@ impl<'tcx> TestGen<'tcx> {
                 _ => None
             };
 
-            println!("test_gen name: {:?}, path: {:?}", name, path);
+            let unqualified = Self::grab_top(&path);
+            let related_to = unqualified.get_ordinal();
+            println!("test_gen name: {:?}, path: {:?}, unqualified: {:?}", name, path, unqualified);
 
             let resolved = Rc::new(ResolvedParam{
                 name,
                 ty,
                 type_name,
                 value_string,
-                param_ordinal
+                param_ordinal,
+                related_to
             });
+
+            let arg = &mut func_info.args[related_to - 1];
+            if !arg.related_to.contains_key(&resolved.name) {
+                arg.related_to.insert(resolved.name.clone(), resolved.clone());
+            }
             
             if !func_info.param_map.contains_key(&resolved.name){
                 func_info.param_map.insert(resolved.name.clone(), resolved.clone());
@@ -163,6 +190,7 @@ impl<'tcx> TestGen<'tcx> {
         trace!("Args: {:?}", func_info.args);
         trace!("Resolved: {:?}", resolved_args);
 
+        let mut constructor_param_initializers = String::new();
         let mut func_call_param_string = String::new();
         for i in 0..func_info.args.len(){
 
@@ -171,25 +199,57 @@ impl<'tcx> TestGen<'tcx> {
                 func_call_param_string.push_str(format!("{}, ", resolved.value_string).as_str())
             }else{
                 let arg = &func_info.args[i];
-                let name = arg.name.clone().unwrap_or(Rc::new(format!("param_{}", i+1)));
+                let name = &arg.name;
                 
+                let mut constructor_params : String = arg.related_to.iter()
+                    .map(|(name, related)| 
+                        if testcase.param_list.iter().any(|p| name == &p.name){
+                            format!("Some({}), ", name)
+                        }else{
+                            "None, ".to_string()
+                        }
+                    )
+                    .collect();
+                
+                if constructor_params.len() > 1 {
+                    constructor_params.truncate(constructor_params.len() - 2);
+                }
+                
+                constructor_param_initializers.push_str(&format!("        let {}: {} = construct_{}({});\n", 
+                        name, arg.ty.to_string(), name, constructor_params
+                    )
+                );
+
                 func_call_param_string.push_str(format!("{}, ", name).as_str())
             }
             
         }
+        
         if func_call_param_string.len() > 1 {
             func_call_param_string.truncate(func_call_param_string.len() - 2);
         }
         
 
         let func_call_string = format!("{}({});", func_info.func_name_raw, func_call_param_string);
-        let out = format!("    #[test]\n    fn test_{}() {{\n{}\n        {}\n    }}\n", test_ind, intializers_string, func_call_string);
+        let out = format!("    #[test]\n    fn test_{}() {{\n{}\n{}\n        {}\n    }}\n\n", test_ind, intializers_string, constructor_param_initializers, func_call_string);
         out
     }
 
+    fn make_constuctor_function(&self, arg: &FuncArg<'tcx>) -> String{
+        let mut params: String = arg.related_to.values()
+            .map(|param| format!("{}: Option<{}>, ", param.name, param.type_name))
+            .collect();
+        if params.len() > 1 {
+            params.truncate(params.len() - 2);
+        }
+        format!("    fn construct_{}({}) -> {}{{\n        todo!(\"Make an instance of this struct using the given params.\")\n    }}\n\n", arg.name, params, arg.ty.to_string())
+    }
+
     fn output_function_testcases(&self, func_info: &FuncTestCaseInfo<'tcx>) -> String{
-        
-        let mut out = format!("#[cfg(test)]\nmod {}_tests {{\n    use super::*;\n", &func_info.func_name);
+        let constructor_functions: String = func_info.args.iter()
+            .map(|arg| self.make_constuctor_function(arg))
+            .collect();
+        let mut out = format!("\n#[cfg(test)]\nmod {}_tests {{\n    use super::*;\n\n{}", &func_info.func_name, constructor_functions);
 
         trace!("Output tests for {}", func_info.func_name);
         for (test_ind, testcase) in func_info.testcases.iter().enumerate(){
@@ -197,7 +257,7 @@ impl<'tcx> TestGen<'tcx> {
             out.push_str(&testcase_str.to_string());
         }
 
-        out.push_str("}");
+        out.push_str("}\n");
         out
     }
 

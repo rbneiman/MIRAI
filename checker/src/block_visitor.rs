@@ -285,7 +285,10 @@ impl<'block, 'analysis, 'compilation, 'tcx> BlockVisitor<'block, 'analysis, 'com
         self.bv.current_location = location;
         self.bv.current_span = source_info.span;
         if *self.bv.current_environment.entry_condition != abstract_value::TRUE && *self.bv.current_environment.entry_condition != abstract_value::FALSE {
+            debug!("Disjunct");
             self.bv.current_environment.entry_condition.collect_disjuncts(&mut self.bv.disjuncts);
+        }else{
+            debug!("Entry: {:?}", self.bv.current_environment.entry_condition); 
         }
         match kind {
             mir::TerminatorKind::Goto { target } => self.visit_goto(*target),

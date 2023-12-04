@@ -627,6 +627,9 @@ impl<'call, 'block, 'analysis, 'compilation, 'tcx>
             KnownNames::StdPanickingAssertFailed
             | KnownNames::StdPanickingBeginPanic
             | KnownNames::StdPanickingBeginPanicFmt => {
+                if *self.block_visitor.bv.current_environment.entry_condition != abstract_value::TRUE && *self.block_visitor.bv.current_environment.entry_condition != abstract_value::FALSE {
+                    self.block_visitor.bv.current_environment.entry_condition.collect_disjuncts(&mut self.block_visitor.bv.disjuncts);
+                }
                 if self.block_visitor.bv.check_for_errors {
                     self.report_calls_to_special_functions();
                 }
