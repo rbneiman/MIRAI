@@ -175,6 +175,7 @@ impl<'tcx> TestGen<'tcx> {
 
     fn output_testcase(&self, test_ind: usize, func_info: &FuncTestCaseInfo<'tcx>, testcase: &Testcase<'tcx>) -> String{
         let intializers_string: String = testcase.param_list.iter()
+            .filter(|param| param.param_ordinal.is_none())
             .map(|param| format!("        let {}: {} = {};\n", param.name, param.type_name, param.value_string))
             .collect();
 
@@ -195,8 +196,11 @@ impl<'tcx> TestGen<'tcx> {
         for i in 0..func_info.args.len(){
 
             if let Some(resolved) = resolved_args[i] {
-
-                func_call_param_string.push_str(format!("{}, ", resolved.value_string).as_str())
+                constructor_param_initializers.push_str(&format!("        let {}: {} = {};\n", 
+                        resolved.name, resolved.type_name, resolved.value_string
+                    )
+                );
+                func_call_param_string.push_str(format!("{}, ", resolved.name).as_str())
             }else{
                 let arg = &func_info.args[i];
                 let name = &arg.name;
